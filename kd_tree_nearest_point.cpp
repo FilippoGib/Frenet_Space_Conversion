@@ -156,10 +156,6 @@ std::vector<double> get_tangent_angles(std::vector<Point> points)
             };
             Point tanVec = normalize(diff);
             tangent_angles[i] = std::atan2(tanVec.y, tanVec.x);
-            if (tangent_angles[i] < 0)
-            {
-                tangent_angles[i] += M_PI;
-            }
         }
     }
 
@@ -168,40 +164,89 @@ std::vector<double> get_tangent_angles(std::vector<Point> points)
 
 
 double get_angular_deviation(double angle1, double angle2) {
-    double diff = angle2 - angle1;
-    diff = std::fmod(diff + M_PI, 2.0 * M_PI);
+    // Compute the raw difference, then shift by π.
+    double diff = angle2 - angle1 + M_PI;
+    
+    // Use fmod to wrap the value into the range [0, 2π)
+    diff = std::fmod(diff, 2 * M_PI);
+    
+    // fmod can return a negative result; adjust if necessary.
     if (diff < 0)
-        diff += 2.0 * M_PI;
-    return diff - M_PI;
+        diff += 2 * M_PI;
+    
+    // Shift back by π to get a value in [-π, π]
+    diff -= M_PI;
+    
+    // Return the absolute value to get the magnitude in [0, π]
+    return std::abs(diff);
 }
-
 
 int main() 
 {
+    // Get data as external inputs
     Odometry odometry = get_odometry();
     Point odometry_pose = odometry.pose;
     PointCloud cloud = get_trajectory();
-    size_t closest_point_index = get_closest_point(cloud, odometry_pose);
 
+    // Find closest point to trajectory using KD-Tree from NanoFLANN
+    size_t closest_point_index = get_closest_point(cloud, odometry_pose);
     Point closest_point = cloud.pts[closest_point_index];
 
+    // Calculate lateral deviation as distance between two points
     double lateral_deviation = distance(odometry_pose, closest_point);
+
+    // I have found the closest point on the trajectory to the odometry pose but I don't trust the result so I check if the previous or next point are closer to the odometry
+    while(1)
+    {
+        if(closest_point_index > 0 && closest_point_index < cloud.pts.size() - 1)
+        {
+            double previuous_point_lateral_deviation = distance(odometry_pose, cloud.pts[closest_point_index - 1]);
+            double next_point_lateral_deviation = distance(odometry_pose, cloud.pts[closest_point_index + 1]);
+            if(previuous_point_lateral_deviation < lateral_deviation)
+            {
+                closest_point_index = closest_point_index - 1;
+                closest_point = cloud.pts[closest_point_index];
+                lateral_deviation = previuous_point_lateral_deviation;
+            }
+            else if(next_point_lateral_deviation < lateral_deviation)
+            {
+                closest_point_index = closest_point_index + 1;
+                closest_point = cloud.pts[closest_point_index];
+                lateral_deviation = next_point_lateral_deviation;
+            }
+            else if(next_point_lateral_deviation > lateral_deviation && previuous_point_lateral_deviation > lateral_deviation)
+            {
+                break;
+            }
+        }
+        else
+        {
+            break;
+        }
+    }
+
+
     std::cout << "Lateral deviation: " << lateral_deviation << std::endl;
     
     // At this point I have the closest point on the trajectory and the lateral deviation from the odometry to the trajectory
     // Now I need to find the angular deviation between the odometry and the trajectory
 
-    std::vector<double> tangent_points = get_tangent_angles(cloud.pts); 
+    // Compute for every point on the trajectory the tangent angle
+    std::vector<double> points_tangents = get_tangent_angles(cloud.pts); 
+    double closest_point_tangent = points_tangents[closest_point_index];
 
-    double closest_point_tangent = tangent_points[closest_point_index];
-
+    // Save the closest point on the trajectory and its tangent to a csv file for visualization
     std::ofstream output("closest_point.csv");
     output << "x,y,tangent\n" << closest_point.x << "," << closest_point.y << "," << closest_point_tangent << std::endl;
+    output.close();
 
     std::cout << "odometry_pose: (" << odometry_pose.x << ", " << odometry_pose.y << ")" << std::endl;
+    std::cout << "odometry yaw: " << odometry.yaw << std::endl;
     std::cout << "Closest point on trajectory: (" << closest_point.x << ", " << closest_point.y << ", " << closest_point_tangent << ")" << std::endl;
 
+    // Finally calculate the angular deviation between the odometry and the closest point on the trajectory
     double angular_deviation = get_angular_deviation(closest_point_tangent, odometry.yaw);
+    std::cout << "Angular deviation: " << angular_deviation << std::endl;
 
-
+    return 0;
 }
